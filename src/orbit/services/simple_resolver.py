@@ -6,10 +6,20 @@ from enum import Enum
 from orbit.models import Settings, PlaceSearchResult
 from orbit.config import GOOGLE_PLACES_API_KEY
 from orbit.services import routing
-import googlemaps
+
+# Try to import googlemaps
+try:
+    import googlemaps
+    GOOGLEMAPS_AVAILABLE = True
+except ImportError:
+    print("[WARNING] googlemaps package not installed - place resolution will not work")
+    googlemaps = None
+    GOOGLEMAPS_AVAILABLE = False
 
 # Initialize Google Maps client
-gmaps = googlemaps.Client(key=GOOGLE_PLACES_API_KEY) if GOOGLE_PLACES_API_KEY else None
+gmaps = None
+if GOOGLEMAPS_AVAILABLE and GOOGLE_PLACES_API_KEY:
+    gmaps = googlemaps.Client(key=GOOGLE_PLACES_API_KEY)
 
 
 # Copy minimal classes from resolver for compatibility
