@@ -564,8 +564,12 @@ def resolve_place(
 
     # === TIER 2: Google Places API ===
     # Use Google Places if OSM results are poor or query looks like a retail chain
-    if GOOGLE_PLACES_AVAILABLE and should_use_google_places(query, candidates):
-        print(f"[TIER 2] Using Google Places API")
+    print(f"[TIER 2] GOOGLE_PLACES_AVAILABLE={GOOGLE_PLACES_AVAILABLE}, candidates={len(candidates)}")
+
+    if not GOOGLE_PLACES_AVAILABLE:
+        print(f"[TIER 2] Google Places API not available - check API key and googlemaps package")
+    elif should_use_google_places(query, candidates):
+        print(f"[TIER 2] Using Google Places API for query: '{query}'")
         google_result = search_place_with_google(
             query=query,
             center_lat=settings.home_lat,
@@ -580,7 +584,7 @@ def resolve_place(
         else:
             print(f"[TIER 2] Google Places found nothing")
     else:
-        print(f"[TIER 2] Skipped Google Places - OSM results look good or API not available")
+        print(f"[TIER 2] Skipped Google Places - OSM results look sufficient")
 
     # === TIER 3: Gemini LLM Validation ===
     llm_validation = None

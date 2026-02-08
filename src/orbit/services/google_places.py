@@ -161,8 +161,9 @@ def should_use_google_places(
 
     Use Google Places when:
     - OSM has no results
-    - OSM has very few results (< 2)
+    - OSM has very few results (<= 2)
     - Query looks like a retail chain or business name
+    - OSM result looks suspicious (e.g., street names for business queries)
 
     Args:
         query: User's search query
@@ -175,21 +176,37 @@ def should_use_google_places(
     if not osm_results or len(osm_results) == 0:
         return True
 
-    # Use if very few results
-    if len(osm_results) < 2:
+    # Use if very few results (increased threshold)
+    if len(osm_results) <= 2:
         return True
 
     # Common retail chains (Google Places has better data)
     retail_chains = [
         'target', 'walmart', 'costco', 'cvs', 'walgreens', 'safeway',
-        'kroger', 'whole foods', 'trader joe', "carter's", 'gap',
+        'kroger', 'whole foods', 'trader joe', "carter", 'gap',
         'old navy', 'kohls', 'macy', 'nordstrom', 'best buy',
         'home depot', 'lowes', 'bed bath', 'starbucks', 'mcdonalds',
-        'burger king', 'taco bell', 'chipotle', 'panera'
+        'burger king', 'taco bell', 'chipotle', 'panera', 'babies',
+        'kids', 'clothing', 'store', 'shop', 'market', 'pharmacy'
     ]
 
     query_lower = query.lower()
     if any(chain in query_lower for chain in retail_chains):
+        print(f"[Google Places] Query '{query}' matches retail pattern - using Google")
         return True
+
+    # Check if OSM results look like street names instead of businesses
+    # (e.g., "John Carter Drive" for query "Carter's")
+    if osm_results:
+        first_result = osm_results[0]
+        result_name_lower = first_result.name.lower()
+
+        # If result contains "drive", "street", "road", etc. but query doesn't,
+        # it's probably a street name not a business
+        street_indicators = ['drive', 'street', 'road', 'avenue', 'lane', 'boulevard', 'way', 'court']
+        if any(indicator in result_name_lower for indicator in street_indicators):
+            if not any(indicator in query_lower for indicator in street_indicators):
+                print(f"[Google Places] OSM result '{first_result.name}' looks like street, query '{query}' looks like business - using Google")
+                return True
 
     return False
