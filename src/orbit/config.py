@@ -2,6 +2,10 @@
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Base paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -94,3 +98,15 @@ PRIORITY_LEVELS = {
 
 # Task statuses
 TASK_STATUSES = ["todo", "in_progress", "done"]
+
+# API Keys
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
+# Place resolution settings
+ENABLE_LLM_RESOLUTION = bool(GEMINI_API_KEY)  # Enable if API key is set
+ENABLE_GOOGLE_PLACES = bool(GOOGLE_PLACES_API_KEY)  # Enable if API key is set
+ENABLE_TAVILY_FALLBACK = bool(TAVILY_API_KEY)  # Enable if API key is set
+OSM_SEARCH_RADIUS_MILES = 10  # Initial search radius
+OSM_EXPANDED_RADIUS_MILES = 25  # Expanded radius if no results

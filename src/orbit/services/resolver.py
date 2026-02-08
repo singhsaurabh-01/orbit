@@ -10,6 +10,33 @@ from rapidfuzz import fuzz, process
 
 from orbit.models import Settings, PlaceSearchResult
 from orbit.services import places, routing
+from orbit.config import OSM_SEARCH_RADIUS_MILES, OSM_EXPANDED_RADIUS_MILES
+
+# Import LLM and web search services (optional)
+try:
+    from orbit.services.gemini_resolver import (
+        validate_and_rank_candidates,
+        extract_location_context,
+        should_use_web_search,
+    )
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+try:
+    from orbit.services.google_places import (
+        search_place_with_google,
+        should_use_google_places,
+    )
+    GOOGLE_PLACES_AVAILABLE = True
+except ImportError:
+    GOOGLE_PLACES_AVAILABLE = False
+
+try:
+    from orbit.services.tavily_search import search_place_with_tavily
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
 
 
 class ResolutionDecision(Enum):
@@ -390,11 +417,67 @@ def should_auto_select(candidates: list[ScoredCandidate]) -> tuple[bool, Selecti
     return False, SelectionReason.BEST_OVERALL_SCORE
 
 
+def filter_osm_results(
+    candidates: list[PlaceSearchResult],
+    home_lat: float,
+    home_lon: float,
+    max_distance_miles: float = 25.0,
+) -> list[PlaceSearchResult]:
+    """
+    Filter out obviously wrong OSM results.
+
+    Removes:
+    - Results outside the USA (if home is in USA)
+    - Results beyond max_distance_miles
+    - Results with very low quality indicators
+
+    Args:
+        candidates: List of PlaceSearchResult from OSM
+        home_lat: User's home latitude
+        home_lon: User's home longitude
+        max_distance_miles: Maximum distance threshold
+
+    Returns:
+        Filtered list of candidates
+    """
+    if not candidates:
+        return []
+
+    filtered = []
+
+    for candidate in candidates:
+        # Calculate distance
+        distance_km = routing.haversine_distance(
+            home_lat, home_lon,
+            candidate.lat, candidate.lon
+        )
+        distance_miles = km_to_miles(distance_km)
+
+        # Filter by distance
+        if distance_miles > max_distance_miles:
+            continue
+
+        # Filter by country (US only if home is in US)
+        # Check if address contains "United States" or US state abbreviations
+        address_lower = candidate.address.lower()
+
+        # If it explicitly mentions other countries, skip
+        other_countries = ["ireland", "united kingdom", "canada", "mexico", "australia"]
+        if any(country in address_lower for country in other_countries):
+            # Skip unless home is in that country
+            if not any(country in candidate.address.lower() for country in other_countries):
+                continue
+
+        filtered.append(candidate)
+
+    return filtered
+
+
 def resolve_place(
     query: str,
     settings: Settings,
-    search_radius_miles: float = 10.0,
-    expand_radius_miles: float = 25.0,
+    search_radius_miles: float = OSM_SEARCH_RADIUS_MILES,
+    expand_radius_miles: float = OSM_EXPANDED_RADIUS_MILES,
     limit: int = 10,
     prev_stop_lat: Optional[float] = None,
     prev_stop_lon: Optional[float] = None,
@@ -402,7 +485,11 @@ def resolve_place(
     return_home: bool = True,
 ) -> ResolvedPlace:
     """
-    Resolve a place query to coordinates.
+    Resolve a place query to coordinates using multi-tier strategy:
+    Tier 1: OSM search with filtering
+    Tier 2: Google Places API (if OSM fails or for retail chains)
+    Tier 3: Gemini LLM validation (if available)
+    Tier 4: Tavily web search fallback (if available)
 
     Args:
         query: User's place query (possibly misspelled)
@@ -427,8 +514,18 @@ def resolve_place(
             decision_reason="Home location not set",
         )
 
-    # Normalize query for search
+    # Extract user's location context for LLM
+    user_city, user_state = "", ""
+    if GEMINI_AVAILABLE:
+        try:
+            user_city, user_state = extract_location_context(settings.home_address)
+        except Exception:
+            user_city, user_state = "", ""
+
+    # === TIER 1: OSM Search with Smart Filtering ===
     normalized_query = normalize_text(query)
+
+    print(f"[TIER 1] Searching OSM for: '{query}'")
 
     # Search with initial radius
     candidates = places.search_places_nearby(
@@ -439,7 +536,9 @@ def resolve_place(
         limit=limit,
     )
 
-    # If no results, try expanded radius
+    print(f"[TIER 1] OSM found {len(candidates)} candidates")
+
+    # If no results, try expanded radius (but smaller than before - 25mi max)
     if not candidates:
         candidates = places.search_places_nearby(
             query,
@@ -455,6 +554,73 @@ def resolve_place(
         if result:
             candidates = [result]
 
+    # Filter out obviously wrong results (international, too far, etc.)
+    candidates = filter_osm_results(
+        candidates,
+        settings.home_lat,
+        settings.home_lon,
+        max_distance_miles=expand_radius_miles,
+    )
+
+    # === TIER 2: Google Places API ===
+    # Use Google Places if OSM results are poor or query looks like a retail chain
+    if GOOGLE_PLACES_AVAILABLE and should_use_google_places(query, candidates):
+        print(f"[TIER 2] Using Google Places API")
+        google_result = search_place_with_google(
+            query=query,
+            center_lat=settings.home_lat,
+            center_lon=settings.home_lon,
+            radius_miles=expand_radius_miles,
+        )
+
+        if google_result:
+            # Add Google result to top of candidates
+            candidates.insert(0, google_result)
+            print(f"[TIER 2] Google Places found: {google_result.name}")
+        else:
+            print(f"[TIER 2] Google Places found nothing")
+    else:
+        print(f"[TIER 2] Skipped Google Places - OSM results look good or API not available")
+
+    # === TIER 3: Gemini LLM Validation ===
+    llm_validation = None
+    if GEMINI_AVAILABLE and candidates and user_city and user_state:
+        print(f"[TIER 2] Calling Gemini for validation (city: {user_city}, state: {user_state})")
+        llm_validation = validate_and_rank_candidates(
+            query=query,
+            candidates=candidates,
+            user_city=user_city,
+            user_state=user_state,
+            max_distance_miles=expand_radius_miles,
+        )
+
+        print(f"[TIER 2] Gemini validation: {llm_validation}")
+
+        # If LLM picked a specific candidate, reorder to put it first
+        if llm_validation and llm_validation.get("best_index") is not None:
+            best_idx = llm_validation["best_index"]
+            if 0 <= best_idx < len(candidates):
+                best_candidate = candidates.pop(best_idx)
+                candidates.insert(0, best_candidate)
+                print(f"[TIER 2] Reordered candidates, best at index 0")
+    else:
+        print(f"[TIER 2] Skipped - GEMINI_AVAILABLE:{GEMINI_AVAILABLE}, candidates:{len(candidates) if candidates else 0}, city:{user_city}, state:{user_state}")
+
+    # === TIER 4: Tavily Web Search Fallback ===
+    if GEMINI_AVAILABLE and TAVILY_AVAILABLE and should_use_web_search(query, candidates, llm_validation):
+        print(f"[TIER 4] Triggering Tavily web search")
+        if user_city and user_state:
+            tavily_result = search_place_with_tavily(query, user_city, user_state)
+            if tavily_result:
+                # Add Tavily result to top of candidates
+                candidates.insert(0, tavily_result)
+                print(f"[TIER 4] Tavily found: {tavily_result.name}")
+            else:
+                print(f"[TIER 4] Tavily returned no results")
+    else:
+        print(f"[TIER 4] Skipped - should_use_web_search returned False or services unavailable")
+
+    # If no candidates after all tiers, return NO_MATCH
     if not candidates:
         return ResolvedPlace(
             query=query,
@@ -493,12 +659,21 @@ def resolve_place(
     # Decide if we can auto-select
     should_auto, reason = should_auto_select(scored)
 
+    # If LLM gave us high confidence, be more aggressive about auto-selecting
+    if llm_validation and llm_validation.get("confidence") == "high" and scored:
+        should_auto = True
+        reason = SelectionReason.BEST_OVERALL_SCORE
+
     if should_auto:
         top = scored[0]
         if not top.selection_reason:
             top.selection_reason = reason
 
         reason_text = top.get_reason_text()
+        # Include LLM reasoning if available
+        if llm_validation and llm_validation.get("reasoning"):
+            reason_text += f" - {llm_validation['reasoning']}"
+
         return ResolvedPlace(
             query=query,
             selected=top,

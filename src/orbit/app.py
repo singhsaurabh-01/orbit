@@ -255,16 +255,13 @@ st.markdown("""
 def init_session_state():
     """Initialize session state for errands list."""
     if "errands" not in st.session_state:
-        # Each errand: {id, name, address, synced_address, resolved_name, purpose, open_time, close_time}
+        # Each errand: {id, name, address, synced_address, resolved_name}
         st.session_state.errands = [{
             "id": str(uuid4()),
             "name": "",
             "address": "",
             "synced_address": "",
             "resolved_name": "",
-            "purpose": "",  # What you're doing there (e.g., "license renewal")
-            "open_time": "",  # Business hours start (e.g., "09:00")
-            "close_time": "",  # Business hours end (e.g., "17:00")
         }]
     if "resolved_places" not in st.session_state:
         st.session_state.resolved_places = {}  # errand_id -> ResolvedPlace
@@ -300,9 +297,6 @@ def add_errand():
         "address": "",
         "synced_address": "",
         "resolved_name": "",
-        "purpose": "",
-        "open_time": "",
-        "close_time": "",
     })
     st.session_state.places_resolved = False
 
@@ -534,9 +528,6 @@ def generate_plan(settings: Settings, leave_time: time, return_time: time):
 
     for priority_idx, (errand, rp) in enumerate(optimized_errands):
         name = errand.get("name", "").strip()
-        purpose = errand.get("purpose", "").strip()
-        open_time = errand.get("open_time", "").strip()
-        close_time = errand.get("close_time", "").strip()
         candidate = rp.selected
 
         task = Task(
@@ -548,17 +539,12 @@ def generate_plan(settings: Settings, leave_time: time, return_time: time):
             address=candidate.place.address,
             lat=candidate.place.lat,
             lon=candidate.place.lon,
-            purpose=purpose if purpose else None,
-            open_time_local=open_time if open_time else None,
-            close_time_local=close_time if close_time else None,
+            purpose=None,
+            open_time_local=None,
+            close_time_local=None,
         )
         db.save_task(task)
         created_tasks.append(task)
-
-        # Generate prep notes if purpose provided
-        if purpose:
-            prep = get_prep_notes(purpose, name)
-            errand_prep_notes[name] = prep
 
     # Store prep notes in session state for results display
     st.session_state.errand_prep_notes = errand_prep_notes
@@ -750,17 +736,10 @@ def render_results(result, failed_errands: list, settings: Settings):
             title = item.title.replace("[Orbit] ", "")
             task_titles.append(title)
 
-            # Check if we have hours info for this task
-            hours_info = ""
-            if item.task and (item.task.open_time_local or item.task.close_time_local):
-                open_t = item.task.open_time_local or "?"
-                close_t = item.task.close_time_local or "?"
-                hours_info = f" • Hours: {open_t}-{close_t}"
-
             st.markdown(f"""
             <div class="stop-card">
                 <strong>{title}</strong>
-                <div class="meta">{start_str} – {end_str} ({duration} min){hours_info}</div>
+                <div class="meta">{start_str} – {end_str} ({duration} min)</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -863,7 +842,7 @@ def render_results(result, failed_errands: list, settings: Settings):
             for item in consolidated:
                 st.checkbox(item, key=f"carry_{hash(item)}")
         else:
-            st.write("No special items needed. Add purpose to errands for suggestions.")
+            st.write("No special items needed.")
 
 
 def render_home_setup(settings: Settings):
@@ -1197,51 +1176,6 @@ def main():
                 if st.button("✕", key=f"del_{errand_id}"):
                     remove_errand(errand_id)
                     st.rerun()
-
-        # Details row: Purpose and Hours (collapsible for cleaner UI)
-        with st.expander("Details (purpose, hours)", expanded=False):
-            dcol1, dcol2, dcol3 = st.columns([4, 2, 2])
-
-            with dcol1:
-                purpose = st.text_input(
-                    "Purpose",
-                    value=errand.get("purpose", ""),
-                    key=f"purpose_{errand_id}",
-                    placeholder="e.g., license renewal, pickup order",
-                    label_visibility="collapsed",
-                    help="What are you doing there? Helps suggest what to bring.",
-                )
-                st.session_state.errands[i]["purpose"] = purpose
-
-            with dcol2:
-                open_time = st.text_input(
-                    "Opens",
-                    value=errand.get("open_time", ""),
-                    key=f"open_{errand_id}",
-                    placeholder="Opens (e.g., 09:00)",
-                    label_visibility="collapsed",
-                    help="When does this place open?",
-                )
-                st.session_state.errands[i]["open_time"] = open_time
-
-            with dcol3:
-                close_time = st.text_input(
-                    "Closes",
-                    value=errand.get("close_time", ""),
-                    key=f"close_{errand_id}",
-                    placeholder="Closes (e.g., 17:00)",
-                    label_visibility="collapsed",
-                    help="When does this place close?",
-                )
-                st.session_state.errands[i]["close_time"] = close_time
-
-            # Show prep notes preview if purpose is entered
-            if purpose.strip():
-                prep = get_prep_notes(purpose, name)
-                if prep.documents or prep.items:
-                    st.caption("**Suggested items:**")
-                    items_preview = (prep.documents[:2] + prep.items[:2])[:3]
-                    st.caption("  " + ", ".join(items_preview) + ("..." if len(prep.documents) + len(prep.items) > 3 else ""))
 
         # Show resolution status if places are resolved
         if st.session_state.places_resolved:
