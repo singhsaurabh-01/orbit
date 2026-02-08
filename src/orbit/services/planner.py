@@ -1,7 +1,8 @@
 """Planner service - optimal daily schedule generation."""
 
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 from uuid import UUID, uuid4
@@ -59,6 +60,14 @@ class PlanResult:
     overflow: list[OverflowTask]
     total_travel_km: float
     total_travel_minutes: float
+    # Time window validation
+    fits_in_window: bool = True
+    schedule_end_time: Optional[datetime] = None
+    window_end_time: Optional[datetime] = None
+    window_start_time: Optional[datetime] = None
+    overtime_minutes: float = 0.0
+    buffer_minutes: float = 0.0
+    suggestions: list[str] = field(default_factory=list)
 
 
 def parse_time(time_str: str) -> time:
@@ -527,13 +536,139 @@ def generate_plan(
         )
         db.save_plan_item(plan_item)
 
+    # Calculate time window validation
+    schedule_end_time = None
+    if scheduled:
+        schedule_end_time = max(item.end for item in scheduled)
+
+    # Check if schedule fits in time window
+    fits_in_window = True
+    overtime_minutes = 0.0
+    buffer_minutes = 0.0
+
+    if schedule_end_time:
+        if schedule_end_time > day_end:
+            fits_in_window = False
+            overtime_minutes = (schedule_end_time - day_end).total_seconds() / 60
+        else:
+            buffer_minutes = (day_end - schedule_end_time).total_seconds() / 60
+
+    # Generate suggestions if plan doesn't fit
+    suggestions = []
+    if not fits_in_window:
+        suggestions = generate_suggestions(
+            scheduled, overflow, day_start, day_end, overtime_minutes
+        )
+
     return PlanResult(
         plan=plan,
         items=scheduled,
         overflow=overflow,
         total_travel_km=round(total_travel_km, 2),
         total_travel_minutes=round(total_travel_minutes, 1),
+        fits_in_window=fits_in_window,
+        schedule_end_time=schedule_end_time,
+        window_end_time=day_end,
+        window_start_time=day_start,
+        overtime_minutes=round(overtime_minutes, 1),
+        buffer_minutes=round(buffer_minutes, 1),
+        suggestions=suggestions,
     )
+
+
+def generate_suggestions(
+    scheduled: list[ScheduledItem],
+    overflow: list[OverflowTask],
+    window_start: datetime,
+    window_end: datetime,
+    overtime_mins: float
+) -> list[str]:
+    """
+    Generate actionable suggestions when plan doesn't fit in time window.
+
+    Returns list of suggestion strings ordered by impact.
+    """
+    suggestions = []
+
+    # Suggestion 1: Leave earlier
+    if overtime_mins <= 60:
+        leave_earlier = math.ceil(overtime_mins / 15) * 15  # Round to 15 min
+        suggestions.append(
+            f"Leave {leave_earlier} minutes earlier "
+            f"(at {(window_start - timedelta(minutes=leave_earlier)).strftime('%-I:%M %p')})"
+        )
+
+    # Suggestion 2: Extend return time
+    if overtime_mins <= 60:
+        extend_return = math.ceil(overtime_mins / 15) * 15
+        suggestions.append(
+            f"Extend return-by time by {extend_return} minutes "
+            f"(to {(window_end + timedelta(minutes=extend_return)).strftime('%-I:%M %p')})"
+        )
+
+    # Suggestion 3: Drop lowest priority task
+    scheduled_tasks = [
+        item for item in scheduled
+        if item.type == "task" and item.task is not None
+    ]
+
+    if scheduled_tasks:
+        # Calculate time savings for each task
+        task_savings = []
+        for item in scheduled_tasks:
+            # Time saved = task duration + associated travel
+            time_saved = item.task.duration_minutes
+
+            # Find adjacent travel segments
+            item_idx = scheduled.index(item)
+            if item_idx > 0 and scheduled[item_idx - 1].type == "travel":
+                time_saved += scheduled[item_idx - 1].travel_minutes or 0
+            if item_idx < len(scheduled) - 1 and scheduled[item_idx + 1].type == "travel":
+                time_saved += scheduled[item_idx + 1].travel_minutes or 0
+
+            task_savings.append((item.task, time_saved))
+
+        # Sort by priority (ascending), then by time saved (descending)
+        task_savings.sort(key=lambda x: (x[0].priority, -x[1]))
+
+        # Suggest dropping tasks that would close the gap
+        for task, time_saved in task_savings:
+            if time_saved >= overtime_mins * 0.7:  # Task saves ≥70% of deficit
+                suggestions.append(
+                    f"Drop '{task.title}' (priority {task.priority}, "
+                    f"saves ~{int(time_saved)} min)"
+                )
+
+    # Suggestion 4: Reduce task durations
+    long_tasks = [
+        item for item in scheduled_tasks
+        if item.task.duration_minutes > 30
+    ]
+
+    if long_tasks:
+        suggestions.append(
+            f"Reduce duration of long tasks "
+            f"({', '.join([t.task.title for t in long_tasks[:3]])})"
+        )
+
+    # Suggestion 5: Pick closer locations
+    long_travels = [
+        (scheduled[i-1], scheduled[i])
+        for i in range(1, len(scheduled))
+        if scheduled[i].type == "task"
+        and scheduled[i-1].type == "travel"
+        and (scheduled[i-1].travel_minutes or 0) > 15
+    ]
+
+    if long_travels:
+        for travel, task in long_travels[:2]:  # Top 2
+            suggestions.append(
+                f"Choose closer location for '{task.title}' "
+                f"(current: {int(travel.travel_minutes)} min travel)"
+            )
+
+    # Limit to top 5 suggestions
+    return suggestions[:5]
 
 
 def get_scheduled_tasks(plan_result: PlanResult) -> list[Task]:

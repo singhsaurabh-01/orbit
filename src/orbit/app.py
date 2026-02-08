@@ -670,19 +670,60 @@ def render_results(result, failed_errands: list, settings: Settings):
     """Render the plan results."""
     st.markdown('<div class="section-header">Your Plan</div>', unsafe_allow_html=True)
 
+    # Time window validation status
+    if result.schedule_end_time:
+        if result.fits_in_window:
+            if result.buffer_minutes > 0:
+                st.success(
+                    f"✓ Schedule fits! All errands scheduled "
+                    f"(finishes at {result.schedule_end_time.strftime('%-I:%M %p')}, "
+                    f"{int(result.buffer_minutes)} min buffer before {result.window_end_time.strftime('%-I:%M %p')} return)"
+                )
+            else:
+                st.success(f"✓ Schedule fits perfectly! All errands scheduled.")
+        else:
+            st.warning(
+                f"⚠️ Schedule exceeds return-by time! "
+                f"Finishes at {result.schedule_end_time.strftime('%-I:%M %p')} "
+                f"({int(result.overtime_minutes)} min past {result.window_end_time.strftime('%-I:%M %p')} deadline)"
+            )
+
+    # Display suggestions if plan doesn't fit
+    if not result.fits_in_window and result.suggestions:
+        st.info("💡 **Suggestions to make it fit:**")
+        for i, suggestion in enumerate(result.suggestions, 1):
+            st.markdown(f"{i}. {suggestion}")
+
     # Get effective starting point for display
     start_lat, start_lon, _ = get_effective_starting_point(settings)
 
-    # Summary
+    # Summary with time utilization
     task_count = len([i for i in result.items if i.type == "task"])
     total_miles = km_to_miles(result.total_travel_km)
-    st.markdown(f"""
-    <div class="summary-card">
-        <strong>{task_count} stops</strong> &nbsp;|&nbsp;
-        <strong>{total_miles:.1f} mi</strong> total travel &nbsp;|&nbsp;
-        <strong>{int(result.total_travel_minutes)} min</strong> driving
-    </div>
-    """, unsafe_allow_html=True)
+
+    # Calculate schedule duration and utilization
+    if result.schedule_end_time and result.window_start_time and result.window_end_time:
+        total_minutes = (result.schedule_end_time - result.window_start_time).total_seconds() / 60
+        window_minutes = (result.window_end_time - result.window_start_time).total_seconds() / 60
+        utilization_pct = (total_minutes / window_minutes) * 100 if window_minutes > 0 else 0
+
+        st.markdown(f"""
+        <div class="summary-card">
+            <strong>{task_count} stops</strong> &nbsp;|&nbsp;
+            <strong>{total_miles:.1f} mi</strong> total travel &nbsp;|&nbsp;
+            <strong>{int(result.total_travel_minutes)} min</strong> driving &nbsp;|&nbsp;
+            <strong>{int(total_minutes)} min</strong> total schedule &nbsp;|&nbsp;
+            <strong>{int(utilization_pct)}%</strong> time used
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="summary-card">
+            <strong>{task_count} stops</strong> &nbsp;|&nbsp;
+            <strong>{total_miles:.1f} mi</strong> total travel &nbsp;|&nbsp;
+            <strong>{int(result.total_travel_minutes)} min</strong> driving
+        </div>
+        """, unsafe_allow_html=True)
 
     # Show optimization info
     optimization = st.session_state.optimization_result
