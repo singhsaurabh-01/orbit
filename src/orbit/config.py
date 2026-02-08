@@ -104,28 +104,38 @@ PRIORITY_LEVELS = {
 # Task statuses
 TASK_STATUSES = ["todo", "in_progress", "done"]
 
-# API Keys - Check Streamlit secrets first (for Streamlit Cloud), then environment variables (for local)
-GEMINI_API_KEY = ""
-GOOGLE_PLACES_API_KEY = ""
-TAVILY_API_KEY = ""
+# API Keys - Lazy loading function (called at runtime, not import time)
+_api_keys_cache = {}
 
-try:
-    import streamlit as st
-    if hasattr(st, 'secrets'):
-        GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-        GOOGLE_PLACES_API_KEY = st.secrets.get("GOOGLE_PLACES_API_KEY", "")
-        TAVILY_API_KEY = st.secrets.get("TAVILY_API_KEY", "")
-        print(f"[Config] Loaded from st.secrets - API key present: {bool(GOOGLE_PLACES_API_KEY)}")
-    else:
-        print("[Config] st.secrets not available, using environment variables")
-        raise ImportError("Secrets not available")
-except Exception as e:
-    # Fall back to environment variables for local development
-    print(f"[Config] Loading from environment variables: {type(e).__name__}")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-    print(f"[Config] API key from env: {bool(GOOGLE_PLACES_API_KEY)}")
+def get_api_key(key_name: str) -> str:
+    """
+    Get API key from Streamlit secrets (Cloud) or environment (local).
+    Uses caching to avoid repeated lookups.
+    """
+    if key_name in _api_keys_cache:
+        return _api_keys_cache[key_name]
+
+    value = ""
+    try:
+        # Try Streamlit secrets first (Streamlit Cloud)
+        import streamlit as st
+        value = st.secrets.get(key_name, "")
+        if value:
+            print(f"[Config] Loaded {key_name} from st.secrets")
+    except Exception:
+        # Fall back to environment variables (local development)
+        value = os.getenv(key_name, "")
+        if value:
+            print(f"[Config] Loaded {key_name} from environment")
+
+    _api_keys_cache[key_name] = value
+    return value
+
+# Expose as module-level variables for backwards compatibility
+# These will be empty at import time, use get_api_key() for runtime access
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 # Place resolution settings
 ENABLE_LLM_RESOLUTION = bool(GEMINI_API_KEY)  # Enable if API key is set

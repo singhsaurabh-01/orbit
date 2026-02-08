@@ -4,7 +4,7 @@ from typing import Optional, List
 from dataclasses import dataclass
 from enum import Enum
 from orbit.models import Settings, PlaceSearchResult
-from orbit.config import GOOGLE_PLACES_API_KEY
+from orbit.config import get_api_key
 from orbit.services import routing
 
 # Try to import googlemaps
@@ -16,10 +16,18 @@ except ImportError:
     googlemaps = None
     GOOGLEMAPS_AVAILABLE = False
 
-# Initialize Google Maps client
-gmaps = None
-if GOOGLEMAPS_AVAILABLE and GOOGLE_PLACES_API_KEY:
-    gmaps = googlemaps.Client(key=GOOGLE_PLACES_API_KEY)
+# Lazy-initialize Google Maps client (will be created on first use)
+_gmaps_client = None
+
+def _get_gmaps_client():
+    """Get or create Google Maps client with API key loaded at runtime."""
+    global _gmaps_client
+    if _gmaps_client is None and GOOGLEMAPS_AVAILABLE:
+        api_key = get_api_key("GOOGLE_PLACES_API_KEY")
+        if api_key:
+            _gmaps_client = googlemaps.Client(key=api_key)
+            print(f"[Resolver] Initialized Google Maps client")
+    return _gmaps_client
 
 
 # Copy minimal classes from resolver for compatibility
@@ -119,6 +127,7 @@ def resolve_place(
             decision_reason="Home location not set",
         )
 
+    gmaps = _get_gmaps_client()
     if not gmaps:
         print(f"[Resolver] Google Places API key not configured")
         return ResolvedPlace(
