@@ -2,10 +2,15 @@
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Try to load .env file if it exists (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not available (e.g., on Streamlit Cloud) - that's OK
+    # Streamlit Cloud uses secrets.toml instead
+    pass
 
 # Base paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
