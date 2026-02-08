@@ -152,9 +152,9 @@ def resolve_place(
                 decision_reason=f"No places found for '{query}'",
             )
 
-        # Convert all results to candidates
+        # Convert all results to candidates with distance calculation
         candidates = []
-        for place in result['results'][:5]:  # Top 5 results
+        for place in result['results']:  # Get all results first
             name = place.get('name', query)
             address = place.get('formatted_address', '')
             location = place.get('geometry', {}).get('location', {})
@@ -168,6 +168,11 @@ def resolve_place(
                     lat, lon
                 )
                 distance_miles = km_to_miles(distance_km)
+
+                # Only include results within reasonable distance (50 miles max)
+                if distance_miles > 50:
+                    print(f"[Resolver] Skipping {name} - too far ({distance_miles:.1f} mi)")
+                    continue
 
                 place_result = PlaceSearchResult(
                     name=name,
@@ -183,31 +188,48 @@ def resolve_place(
                     place=place_result,
                     distance_miles=round(distance_miles, 1),
                     name_similarity=100.0,
-                    combined_score=100.0,
-                    selection_reason=SelectionReason.ONLY_MATCH if len(result['results']) == 1 else SelectionReason.BEST_OVERALL_SCORE,
+                    combined_score=100.0 - distance_miles,  # Score inversely proportional to distance
+                    selection_reason=SelectionReason.BEST_OVERALL_SCORE,
                 )
                 candidates.append(candidate)
 
+        # Sort by distance (closest first)
+        candidates.sort(key=lambda c: c.distance_miles)
+
+        # Limit to top 5 closest
+        candidates = candidates[:5]
+
         if not candidates:
-            print(f"[Resolver] No valid candidates")
+            print(f"[Resolver] No valid candidates within 50 miles")
             return ResolvedPlace(
                 query=query,
                 selected=None,
                 candidates=[],
                 decision=ResolutionDecision.NO_MATCH,
-                decision_reason="No valid results found",
+                decision_reason="No places found within 50 miles",
             )
 
-        # Auto-select the first (best) result
+        # Always auto-select the closest location for optimal route planning
+        # In the future, this can be enhanced to consider the full day's route
+        # and select locations that minimize total travel time/distance
         top = candidates[0]
-        print(f"[Resolver] ✅ Auto-selected: {top.display_name} ({top.distance_miles} mi)")
+
+        if len(candidates) == 1:
+            top.selection_reason = SelectionReason.ONLY_MATCH
+            reason = "Only match found"
+        else:
+            top.selection_reason = SelectionReason.BEST_OVERALL_SCORE
+            reason = "Closest location"
+
+        print(f"[Resolver] ✅ Auto-selected: {top.display_name} ({top.distance_miles} mi) - {reason}")
+        print(f"   Other options: {', '.join([f'{c.display_name} ({c.distance_miles} mi)' for c in candidates[1:3]])}" if len(candidates) > 1 else "")
 
         return ResolvedPlace(
             query=query,
             selected=top,
             candidates=candidates,
             decision=ResolutionDecision.AUTO_BEST,
-            decision_reason=f"{top.distance_miles} mi ({top.get_reason_text()})",
+            decision_reason=f"{top.distance_miles} mi - {reason}",
         )
 
     except Exception as e:

@@ -443,8 +443,6 @@ def get_resolution_status():
             rp = st.session_state.resolved_places[errand_id]
             if rp.is_resolved:
                 resolved_count += 1
-            elif rp.needs_disambiguation:
-                pending_count += 1
             else:
                 failed_count += 1
 
@@ -967,32 +965,6 @@ def render_errand_resolution(errand: dict, errand_idx: int, settings: Settings):
             <span style="font-size:0.8em; color:#81c784;">📍 {rp.selected.distance_miles} mi • User selected</span>
         </div>
         """, unsafe_allow_html=True)
-
-    elif rp.decision == ResolutionDecision.PENDING:
-        # Needs disambiguation
-        st.markdown(f"""
-        <div class="pending-place">
-            ⚠ Multiple matches found — please select one
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Show detailed candidate list
-        candidates = rp.candidates[:5]
-        for i, c in enumerate(candidates):
-            with st.container():
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    st.markdown(f"""
-                    **{i+1}. {c.display_name}**
-                    {c.full_address}
-                    📍 {c.distance_miles} mi from home
-                    """)
-                with col2:
-                    if st.button("Select", key=f"sel_{errand_id}_{i}"):
-                        updated = select_candidate(rp, i)
-                        st.session_state.resolved_places[errand_id] = updated
-                        sync_errand_address(errand_idx, errand_id)
-                        st.rerun()
 
     elif rp.decision == ResolutionDecision.NO_MATCH:
         # No match found
