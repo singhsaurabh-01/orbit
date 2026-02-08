@@ -11,7 +11,8 @@ from orbit import db
 from orbit.models import Task, Settings
 from orbit.services import planner, packing, places, routing
 from orbit.services.optimizer import optimize_route, reorder_items, OptimizedRoute
-from orbit.services.resolver import (
+# Use simple Google Places-only resolver
+from orbit.services.simple_resolver import (
     resolve_place,
     select_candidate,
     ResolvedPlace,

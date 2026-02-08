@@ -1,32 +1,95 @@
-"""Simplified place resolver - Google Places first, OSM fallback."""
+"""Simplified place resolver - Google Places API only."""
 
-from typing import Optional
+from typing import Optional, List
+from dataclasses import dataclass
+from enum import Enum
 from orbit.models import Settings, PlaceSearchResult
 from orbit.config import GOOGLE_PLACES_API_KEY
+from orbit.services import routing
+import googlemaps
 
-# Try to import services
-try:
-    from orbit.services.google_places import search_place_with_google
-    GOOGLE_AVAILABLE = bool(GOOGLE_PLACES_API_KEY)
-except ImportError:
-    GOOGLE_AVAILABLE = False
-    search_place_with_google = None
-
-try:
-    from orbit.services import places
-    OSM_AVAILABLE = True
-except ImportError:
-    OSM_AVAILABLE = False
-    places = None
+# Initialize Google Maps client
+gmaps = googlemaps.Client(key=GOOGLE_PLACES_API_KEY) if GOOGLE_PLACES_API_KEY else None
 
 
-def resolve_place_simple(
+# Copy minimal classes from resolver for compatibility
+class ResolutionDecision(Enum):
+    AUTO_BEST = "auto_best"
+    USER_SELECTED = "user_selected"
+    NO_MATCH = "no_match"
+    PENDING = "pending"
+
+
+class SelectionReason(Enum):
+    BEST_OVERALL_SCORE = "best_overall_score"
+    ONLY_MATCH = "only_match"
+    USER_SELECTED = "user_selected"
+
+
+@dataclass
+class ScoredCandidate:
+    place: PlaceSearchResult
+    distance_miles: float
+    name_similarity: float = 100.0
+    combined_score: float = 100.0
+    selection_reason: Optional[SelectionReason] = None
+
+    @property
+    def display_name(self) -> str:
+        return self.place.name
+
+    @property
+    def display_address(self) -> str:
+        addr = self.place.address
+        if len(addr) > 60:
+            return addr[:57] + "..."
+        return addr
+
+    @property
+    def full_address(self) -> str:
+        return self.place.address
+
+    def get_reason_text(self) -> str:
+        if self.selection_reason == SelectionReason.ONLY_MATCH:
+            return "Only match found"
+        elif self.selection_reason == SelectionReason.USER_SELECTED:
+            return "User selected"
+        return "Best match"
+
+
+@dataclass
+class ResolvedPlace:
+    query: str
+    selected: Optional[ScoredCandidate]
+    candidates: List[ScoredCandidate]
+    decision: ResolutionDecision
+    decision_reason: str
+
+    @property
+    def needs_disambiguation(self) -> bool:
+        return self.decision == ResolutionDecision.PENDING
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.decision in (ResolutionDecision.AUTO_BEST, ResolutionDecision.USER_SELECTED)
+
+
+def km_to_miles(km: float) -> float:
+    """Convert kilometers to miles."""
+    return km * 0.621371
+
+
+def resolve_place(
     query: str,
     settings: Settings,
     radius_miles: float = 25.0,
-) -> Optional[PlaceSearchResult]:
+    **kwargs  # Accept and ignore other parameters for compatibility
+) -> ResolvedPlace:
     """
-    Simple place resolution: Google Places first, OSM fallback.
+    Simple place resolution using only Google Places API.
+
+    No OSM, no LLM, no Tavily - just Google Places.
+    Simple, fast, and accurate.
 
     Args:
         query: User's search query (e.g., "Carter's", "Target")
@@ -34,51 +97,206 @@ def resolve_place_simple(
         radius_miles: Search radius in miles
 
     Returns:
-        PlaceSearchResult if found, None otherwise
+        ResolvedPlace object with resolution status
     """
     if not settings.has_home_location:
-        return None
-
-    # Try Google Places first (most accurate)
-    if GOOGLE_AVAILABLE:
-        print(f"[Simple Resolver] Trying Google Places for '{query}'")
-        result = search_place_with_google(
+        print(f"[Resolver] No home location set")
+        return ResolvedPlace(
             query=query,
-            center_lat=settings.home_lat,
-            center_lon=settings.home_lon,
-            radius_miles=radius_miles,
-        )
-        if result:
-            print(f"[Simple Resolver] ✅ Google Places found: {result.name}")
-            return result
-        print(f"[Simple Resolver] Google Places found nothing")
-
-    # Fallback to OSM if Google fails
-    if OSM_AVAILABLE:
-        print(f"[Simple Resolver] Falling back to OSM for '{query}'")
-
-        # Try nearby search
-        candidates = places.search_places_nearby(
-            query,
-            settings.home_lat,
-            settings.home_lon,
-            radius_km=radius_miles / 0.621371,
-            limit=5,
+            selected=None,
+            candidates=[],
+            decision=ResolutionDecision.NO_MATCH,
+            decision_reason="Home location not set",
         )
 
-        if candidates:
-            # Return first result
-            result = candidates[0]
-            print(f"[Simple Resolver] ✅ OSM found: {result.name}")
-            return result
+    if not gmaps:
+        print(f"[Resolver] Google Places API key not configured")
+        return ResolvedPlace(
+            query=query,
+            selected=None,
+            candidates=[],
+            decision=ResolutionDecision.NO_MATCH,
+            decision_reason="Google Places API not configured",
+        )
 
-        # Try geocoding as address
-        result = places.geocode_address(query)
-        if result:
-            print(f"[Simple Resolver] ✅ OSM geocoded: {result.name}")
-            return result
+    try:
+        # Convert miles to meters
+        radius_meters = int(radius_miles * 1609.34)
 
-        print(f"[Simple Resolver] OSM found nothing")
+        print(f"[Resolver] Searching Google Places for '{query}' near home")
 
-    print(f"[Simple Resolver] ❌ No results for '{query}'")
-    return None
+        # Use Google Places Text Search
+        result = gmaps.places(
+            query=query,
+            location=(settings.home_lat, settings.home_lon),
+            radius=radius_meters,
+        )
+
+        if not result or 'results' not in result or len(result['results']) == 0:
+            print(f"[Resolver] No results found for '{query}'")
+            return ResolvedPlace(
+                query=query,
+                selected=None,
+                candidates=[],
+                decision=ResolutionDecision.NO_MATCH,
+                decision_reason=f"No places found for '{query}'",
+            )
+
+        # Convert all results to candidates
+        candidates = []
+        for place in result['results'][:5]:  # Top 5 results
+            name = place.get('name', query)
+            address = place.get('formatted_address', '')
+            location = place.get('geometry', {}).get('location', {})
+            lat = location.get('lat')
+            lon = location.get('lng')
+
+            if lat and lon:
+                # Calculate distance from home
+                distance_km = routing.haversine_distance(
+                    settings.home_lat, settings.home_lon,
+                    lat, lon
+                )
+                distance_miles = km_to_miles(distance_km)
+
+                place_result = PlaceSearchResult(
+                    name=name,
+                    address=address,
+                    lat=lat,
+                    lon=lon,
+                    source="google_places",
+                    osm_id=None,
+                    place_type=place.get('types', [None])[0] if place.get('types') else None,
+                )
+
+                candidate = ScoredCandidate(
+                    place=place_result,
+                    distance_miles=round(distance_miles, 1),
+                    name_similarity=100.0,
+                    combined_score=100.0,
+                    selection_reason=SelectionReason.ONLY_MATCH if len(result['results']) == 1 else SelectionReason.BEST_OVERALL_SCORE,
+                )
+                candidates.append(candidate)
+
+        if not candidates:
+            print(f"[Resolver] No valid candidates")
+            return ResolvedPlace(
+                query=query,
+                selected=None,
+                candidates=[],
+                decision=ResolutionDecision.NO_MATCH,
+                decision_reason="No valid results found",
+            )
+
+        # Auto-select the first (best) result
+        top = candidates[0]
+        print(f"[Resolver] ✅ Auto-selected: {top.display_name} ({top.distance_miles} mi)")
+
+        return ResolvedPlace(
+            query=query,
+            selected=top,
+            candidates=candidates,
+            decision=ResolutionDecision.AUTO_BEST,
+            decision_reason=f"{top.distance_miles} mi ({top.get_reason_text()})",
+        )
+
+    except Exception as e:
+        print(f"[Resolver] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ResolvedPlace(
+            query=query,
+            selected=None,
+            candidates=[],
+            decision=ResolutionDecision.NO_MATCH,
+            decision_reason=f"Error: {str(e)}",
+        )
+
+
+def select_candidate(
+    resolved: ResolvedPlace,
+    candidate_index: int,
+) -> ResolvedPlace:
+    """
+    Update a ResolvedPlace with user's selection.
+
+    Args:
+        resolved: Original ResolvedPlace
+        candidate_index: Index of selected candidate
+
+    Returns:
+        Updated ResolvedPlace with user selection
+    """
+    if candidate_index < 0 or candidate_index >= len(resolved.candidates):
+        return resolved
+
+    selected = resolved.candidates[candidate_index]
+    selected.selection_reason = SelectionReason.USER_SELECTED
+
+    return ResolvedPlace(
+        query=resolved.query,
+        selected=selected,
+        candidates=resolved.candidates,
+        decision=ResolutionDecision.USER_SELECTED,
+        decision_reason="User selected",
+    )
+
+
+def get_multiple_candidates(
+    query: str,
+    settings: Settings,
+    radius_miles: float = 25.0,
+    limit: int = 5,
+) -> List[PlaceSearchResult]:
+    """
+    Get multiple place candidates for user selection.
+
+    Args:
+        query: User's search query
+        settings: User settings with home location
+        radius_miles: Search radius in miles
+        limit: Maximum number of results
+
+    Returns:
+        List of PlaceSearchResult objects
+    """
+    if not settings.has_home_location or not gmaps:
+        return []
+
+    try:
+        radius_meters = int(radius_miles * 1609.34)
+
+        result = gmaps.places(
+            query=query,
+            location=(settings.home_lat, settings.home_lon),
+            radius=radius_meters,
+        )
+
+        if not result or 'results' not in result:
+            return []
+
+        candidates = []
+        for place in result['results'][:limit]:
+            name = place.get('name', query)
+            address = place.get('formatted_address', '')
+            location = place.get('geometry', {}).get('location', {})
+            lat = location.get('lat')
+            lon = location.get('lng')
+
+            if lat and lon:
+                candidates.append(PlaceSearchResult(
+                    name=name,
+                    address=address,
+                    lat=lat,
+                    lon=lon,
+                    source="google_places",
+                    osm_id=None,
+                    place_type=place.get('types', [None])[0] if place.get('types') else None,
+                ))
+
+        print(f"[Resolver] Found {len(candidates)} candidates")
+        return candidates
+
+    except Exception as e:
+        print(f"[Resolver] Error getting candidates: {e}")
+        return []
