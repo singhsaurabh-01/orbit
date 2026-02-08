@@ -139,16 +139,18 @@ def resolve_place(
         )
 
     try:
-        # Convert miles to meters
-        radius_meters = int(radius_miles * 1609.34)
+        # Convert miles to meters for max distance filter (applied after results)
+        max_distance_meters = int(radius_miles * 1609.34)
 
-        print(f"[Resolver] Searching Google Places for '{query}' near home")
+        print(f"[Resolver] Searching Google Places for '{query}' near home (distance-ranked)")
 
-        # Use Google Places Text Search
+        # Use Google Places Text Search with distance-based ranking
+        # rank_by='distance' returns results sorted by proximity (no radius parameter allowed)
+        # We'll filter by max distance afterward
         result = gmaps.places(
             query=query,
             location=(settings.home_lat, settings.home_lon),
-            radius=radius_meters,
+            rank_by='distance',
         )
 
         if not result or 'results' not in result or len(result['results']) == 0:
@@ -178,9 +180,11 @@ def resolve_place(
                 )
                 distance_miles = km_to_miles(distance_km)
 
-                # Only include results within reasonable distance (50 miles max)
-                if distance_miles > 50:
-                    print(f"[Resolver] Skipping {name} - too far ({distance_miles:.1f} mi)")
+                # Only include results within reasonable distance
+                # With rank_by='distance', results are already sorted by proximity
+                # Filter by max radius (converted from input radius_miles parameter)
+                if distance_miles > radius_miles:
+                    print(f"[Resolver] Skipping {name} - beyond search radius ({distance_miles:.1f} mi > {radius_miles} mi)")
                     continue
 
                 place_result = PlaceSearchResult(
@@ -305,12 +309,11 @@ def get_multiple_candidates(
         return []
 
     try:
-        radius_meters = int(radius_miles * 1609.34)
-
+        # Use distance-based ranking for proximity-aware results
         result = gmaps.places(
             query=query,
             location=(settings.home_lat, settings.home_lon),
-            radius=radius_meters,
+            rank_by='distance',
         )
 
         if not result or 'results' not in result:
