@@ -1,0 +1,96 @@
+"""Configuration settings for Orbit."""
+
+import os
+from pathlib import Path
+
+# Base paths
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+DB_PATH = DATA_DIR / "orbit.db"
+
+# Ensure data directory exists
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Nominatim settings
+NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org"
+NOMINATIM_USER_AGENT = "Orbit/0.1.0 (personal day planner)"
+NOMINATIM_RATE_LIMIT_SECONDS = 1.0
+
+# OSRM settings
+OSRM_BASE_URL = "https://router.project-osrm.org"
+OSRM_TIMEOUT_SECONDS = 10
+
+# Cache settings
+CACHE_TTL_DAYS = 7
+
+# Default settings
+DEFAULT_TIMEZONE = "America/Chicago"
+DEFAULT_WORK_START = "09:00"
+DEFAULT_WORK_END = "18:00"
+DEFAULT_SEARCH_RADIUS_KM = 10
+DEFAULT_CITY_SPEED_KMH = 40  # ~25 mph for fallback travel time estimation
+
+# Packing rules - mapping keywords to suggested items
+PACKING_RULES = {
+    # DMV/License related
+    "dmv": ["Driver's license/ID", "Proof of address", "Payment method", "Appointment confirmation"],
+    "license": ["Driver's license/ID", "Proof of address", "Payment method", "Appointment confirmation"],
+    "registration": ["Driver's license/ID", "Vehicle registration", "Insurance card", "Payment method"],
+
+    # Banking/Financial
+    "bank": ["ID", "Documents to sign", "Payment method", "Account information"],
+    "notary": ["ID", "Documents to sign", "Payment method"],
+    "tax": ["ID", "Tax documents", "W-2/1099 forms", "Payment method"],
+
+    # Vehicle
+    "car service": ["Car keys", "Insurance card", "Service appointment details"],
+    "service center": ["Car keys", "Insurance card", "Service appointment details"],
+    "mechanic": ["Car keys", "Insurance card", "Service appointment details"],
+    "oil change": ["Car keys", "Service coupon"],
+    "inspection": ["Car keys", "Insurance card", "Vehicle registration"],
+
+    # Medical
+    "doctor": ["ID", "Insurance card", "List of medications", "Appointment confirmation"],
+    "hospital": ["ID", "Insurance card", "List of medications", "Emergency contact info"],
+    "pharmacy": ["ID", "Insurance card", "Prescription"],
+    "dentist": ["ID", "Insurance card", "Appointment confirmation"],
+
+    # School/Education
+    "school": ["Forms", "ID", "Payment method"],
+    "university": ["Student ID", "Forms", "Laptop"],
+
+    # Government
+    "passport": ["Current passport", "ID", "Passport photos", "Payment method", "Supporting documents"],
+    "court": ["ID", "Court summons", "Documents"],
+    "post office": ["ID", "Package/mail", "Tracking number"],
+
+    # Shopping
+    "grocery": ["Reusable bags", "Shopping list"],
+    "returns": ["Receipt", "Item to return", "ID"],
+
+    # Default essentials (always suggested)
+    "_default": ["Phone", "Wallet"],
+}
+
+# Task categories
+TASK_CATEGORIES = [
+    "errand",
+    "appointment",
+    "deep_work",
+    "personal",
+    "health",
+    "financial",
+    "shopping",
+    "other",
+]
+
+# Priority levels
+PRIORITY_LEVELS = {
+    1: "Low",
+    2: "Medium",
+    3: "High",
+    4: "Urgent",
+}
+
+# Task statuses
+TASK_STATUSES = ["todo", "in_progress", "done"]
