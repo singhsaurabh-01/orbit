@@ -886,73 +886,143 @@ def render_results(result, failed_errands: list, settings: Settings):
 
 
 def render_home_setup(settings: Settings):
-    """Render home setup prompt with multiple options if ambiguous."""
-    st.warning("Please set your home address to get started.")
+    """Render home setup prompt with geolocation and manual entry options."""
+    st.warning("📍 **Please set your home address to get started**")
 
-    address = st.text_input(
-        "Home Address",
-        placeholder="Enter your home address...",
-        value=st.session_state.home_address_typed,
-    )
-
-    # If we have geocode options, show them for selection
-    if st.session_state.home_geocode_options:
-        st.markdown("**Select the correct address:**")
-        options = st.session_state.home_geocode_options[:5]
-
-        for i, opt in enumerate(options):
-            precision_note = ""
-            if opt.precision == "street":
-                precision_note = " (street-level)"
-            elif opt.precision == "city":
-                precision_note = " (city-level)"
-            elif opt.precision == "region":
-                precision_note = " (region-level)"
-
-            if st.button(f"{opt.address}{precision_note}", key=f"home_opt_{i}"):
-                settings.home_name = "Home"
-                settings.home_address = opt.address
-                settings.home_lat = opt.lat
-                settings.home_lon = opt.lon
-                st.session_state.home_precision = opt.precision
-                st.session_state.home_address_typed = address
+    # Show current saved home if exists (for reference during editing)
+    if settings.home_address:
+        with st.expander("ℹ️ Current saved home address", expanded=False):
+            st.info(f"**{settings.home_address}**")
+            st.caption(f"Coordinates: {settings.home_lat:.6f}, {settings.home_lon:.6f}")
+            if st.button("Clear and set new address"):
+                settings.home_address = ""
+                settings.home_lat = None
+                settings.home_lon = None
                 db.save_settings(settings)
                 st.session_state.home_geocode_options = []
-                st.success("Home location saved!")
                 st.rerun()
 
-        if st.button("Try different address"):
-            st.session_state.home_geocode_options = []
-            st.rerun()
-    else:
-        if st.button("Find Address"):
-            if address:
-                st.session_state.home_address_typed = address
-                # Get multiple geocode options
-                options = places.geocode_address_multi(address, limit=5)
+    # Tab interface for address entry methods
+    tab1, tab2 = st.tabs(["📍 Use Current Location", "⌨️ Enter Address"])
 
-                if not options:
-                    st.error("Could not find that address. Please try a more specific address.")
-                elif len(options) == 1:
-                    # Single result - use it directly
-                    opt = options[0]
+    with tab1:
+        st.markdown("**Get your location automatically:**")
+        st.caption("Click the button below and allow location access in your browser")
+
+        # Import and render geolocation component
+        from orbit.utils.geolocation import get_geolocation_component
+        location_result = get_geolocation_component()
+
+        # Handle geolocation result
+        if location_result:
+            if isinstance(location_result, dict):
+                if 'error' in location_result:
+                    st.error(f"Could not get location: {location_result['error']}")
+                elif 'lat' in location_result and 'lon' in location_result:
+                    lat = location_result['lat']
+                    lon = location_result['lon']
+                    accuracy = location_result.get('accuracy', 'unknown')
+
+                    st.success(f"✓ Location detected! (±{round(accuracy)}m accuracy)")
+
+                    # Reverse geocode to get address
+                    with st.spinner("Finding your address..."):
+                        from orbit.services import places
+                        address = places.reverse_geocode(lat, lon)
+
+                        if address:
+                            st.info(f"**Detected address:** {address}")
+                            if st.button("✓ Use this address as home", type="primary"):
+                                settings.home_name = "Home"
+                                settings.home_address = address
+                                settings.home_lat = lat
+                                settings.home_lon = lon
+                                st.session_state.home_precision = "exact"
+                                db.save_settings(settings)
+                                st.success("🎉 Home location saved successfully!")
+                                time.sleep(1)
+                                st.rerun()
+                        else:
+                            st.error("Could not determine address from your location. Please try manual entry.")
+
+    with tab2:
+        st.markdown("**Enter your address manually:**")
+        address = st.text_input(
+            "Home Address",
+            placeholder="e.g., 123 Main St, Austin, TX",
+            value=st.session_state.home_address_typed,
+            help="Enter your full address including city and state for best results"
+        )
+
+        # If we have geocode options, show them for selection
+        if st.session_state.home_geocode_options:
+            st.markdown("**Select the correct address:**")
+            st.caption("Choose the most accurate match for your home:")
+            options = st.session_state.home_geocode_options[:5]
+
+            for i, opt in enumerate(options):
+                # Add precision indicators with icons
+                precision_icon = "🎯"  # exact
+                precision_label = "exact"
+                if opt.precision == "street":
+                    precision_icon = "📍"
+                    precision_label = "street-level"
+                elif opt.precision == "city":
+                    precision_icon = "🏙️"
+                    precision_label = "city-level"
+                elif opt.precision == "region":
+                    precision_icon = "🗺️"
+                    precision_label = "region-level"
+
+                button_label = f"{precision_icon} {opt.address}"
+                if st.button(button_label, key=f"home_opt_{i}", use_container_width=True):
                     settings.home_name = "Home"
                     settings.home_address = opt.address
                     settings.home_lat = opt.lat
                     settings.home_lon = opt.lon
                     st.session_state.home_precision = opt.precision
+                    st.session_state.home_address_typed = address
                     db.save_settings(settings)
-                    if opt.is_approximate():
-                        st.success(f"Home location saved (street-level)!")
-                    else:
-                        st.success("Home location saved!")
+                    st.session_state.home_geocode_options = []
+                    st.success(f"🎉 Home location saved! (Precision: {precision_label})")
+                    time.sleep(1)
                     st.rerun()
+
+            st.markdown("---")
+            if st.button("🔄 Try different address", use_container_width=True):
+                st.session_state.home_geocode_options = []
+                st.rerun()
+        else:
+            # Show "Find Address" button when no options displayed
+            if st.button("🔍 Find Address", type="primary", use_container_width=True):
+                if address:
+                    st.session_state.home_address_typed = address
+                    with st.spinner("Searching for your address..."):
+                        # Get multiple geocode options
+                        options = places.geocode_address_multi(address, limit=5)
+
+                        if not options:
+                            st.error("❌ Could not find that address. Please try:\n- Adding more details (city, state, zip)\n- Checking spelling\n- Using a nearby landmark")
+                        elif len(options) == 1:
+                            # Single result - use it directly
+                            opt = options[0]
+                            settings.home_name = "Home"
+                            settings.home_address = opt.address
+                            settings.home_lat = opt.lat
+                            settings.home_lon = opt.lon
+                            st.session_state.home_precision = opt.precision
+                            db.save_settings(settings)
+
+                            precision_label = "exact" if opt.precision == "exact" else f"{opt.precision}-level"
+                            st.success(f"🎉 Home location saved! (Precision: {precision_label})")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            # Multiple options - let user choose
+                            st.session_state.home_geocode_options = options
+                            st.rerun()
                 else:
-                    # Multiple options - let user choose
-                    st.session_state.home_geocode_options = options
-                    st.rerun()
-            else:
-                st.error("Please enter an address.")
+                    st.error("⚠️ Please enter an address first.")
 
 
 def sync_errand_address(errand_idx: int, errand_id: str):
